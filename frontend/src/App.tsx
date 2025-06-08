@@ -16,6 +16,7 @@ function App() {
   const [latency, setLatency] = useState<{ total: number; server: number } | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const [selectedSuggestion, setSelectedSuggestion] = useState<number | null>(null)
+  const [networkPingMs, setNetworkPingMs] = useState<number | null>(null)
 
   const fetchSuggestions = async (input: string) => {
     if (!input.trim()) {
@@ -67,6 +68,21 @@ function App() {
     return () => clearTimeout(timeoutId)
   }, [text, systemPrompt])
 
+  // Ping latency endpoint on mount
+  useEffect(() => {
+    const ping = async () => {
+      const start = performance.now()
+      try {
+        await fetch('http://localhost:8000/api/latency')
+        const end = performance.now()
+        setNetworkPingMs(end - start)
+      } catch (e) {
+        setNetworkPingMs(null)
+      }
+    }
+    ping()
+  }, [])
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Tab' && suggestions.length > 0) {
       e.preventDefault()
@@ -107,6 +123,12 @@ function App() {
           <div>Network Latency: {(latency.total - latency.server).toFixed(2)}ms</div>
           <div>Server Processing: {latency.server.toFixed(2)}ms</div>
           <div>Total Latency: {latency.total.toFixed(2)}ms</div>
+        </div>
+      )}
+
+      {networkPingMs !== null && (
+        <div className="latency-info">
+          <div>Initial Network Ping: {networkPingMs.toFixed(2)}ms</div>
         </div>
       )}
 

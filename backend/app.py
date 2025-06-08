@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List
 import torch
-from transformers import pipeline
+from transformers import pipeline, BitsAndBytesConfig
 import time
 import logging
 import os
@@ -44,14 +44,20 @@ else:
 
 logger.info(f"Loading model {MODEL_NAME}...")
 try:
+    # Configure quantization
+    quantization_config = BitsAndBytesConfig(
+        load_in_8bit=True if device == "cuda" else False,
+        llm_int8_threshold=6.0,
+        llm_int8_has_fp16_weight=False
+    ) if device == "cuda" else None
+
     generator = pipeline(
         "text-generation",
         model=MODEL_NAME,
         model_kwargs={
             "torch_dtype": torch.float16 if device == "cuda" else torch.float32,
             "low_cpu_mem_usage": True,
-            "device_map": device,
-            "load_in_8bit": True if device == "cuda" else False,  # Enable 8-bit quantization for CUDA
+            "quantization_config": quantization_config
         },
         device_map=device
     )
@@ -62,7 +68,7 @@ except Exception as e:
 
 class CompletionRequest(BaseModel):
     text: str
-    system_prompt: str = "You are an autocomplete assistant. Your task is to suggest ONLY the next few words that would naturally complete the user's text. IMPORTANT: Do not start suggestions with phrases like 'Based on', 'I would', 'You should', or any other filler words. Get straight to the point with the actual continuation. Do not add any context, explanations, or new sentences. Return only the direct continuation of the existing text. Keep suggestions concise and focused on completing the current thought."
+    system_prompt: str = "You are an autocomplete assistant. Your task is to suggest ONLY the next few words that would naturally complete the user's text. IMPORTANT: Do not start suggestions with phrases like 'Based on', 'I would', 'You should', or any other filler words. Get straight to the point with the actual continuation. Do not add any context, explanations, or new sentences. Return only the direct continuation of the existing text. Keep suggestions concise and focused on completing the current thought. Return ONLY the next few words that would naturally complete the user's text. Do NOT include any speaker labels, prefixes, or explanations. Only output the direct continuation."
     max_tokens: int = 5
     num_suggestions: int = 3
     temperature: float = 0.1
@@ -78,37 +84,33 @@ async def get_completion(request: CompletionRequest):
         logger.info(f"Received completion request for text: {request.text[:50]}...")
         request_start_time = time.time()
         
-        # Prepare messages for the model
-        messages = [
-            {"role": "system", "content": request.system_prompt},
-            {"role": "user", "content": request.text}
-        ]
+        # Format the input text with system prompt
+        formatted_text = f"SYSTEM: {request.system_prompt}\n\nUser: {request.text}\n\n Output:"
         
         # Generate completions
         generation_start_time = time.time()
         with torch.inference_mode():  # More efficient than no_grad for inference
             outputs = generator(
-                messages,
+                formatted_text,
                 max_new_tokens=request.max_tokens,
                 num_return_sequences=request.num_suggestions,
                 temperature=request.temperature,
                 do_sample=True,
-                repetition_penalty=1.1,  # Reduced from 1.2
-                no_repeat_ngram_size=2,  # Reduced from 3
-                top_k=20,  # Reduced from 50
-                top_p=0.95,  # Increased from 0.9
-                early_stopping=True,  # Added early stopping
-                pad_token_id=generator.tokenizer.eos_token_id  # Added explicit padding
+                repetition_penalty=1.1,
+                no_repeat_ngram_size=2,
+                top_k=20,
+                top_p=0.95,
+                pad_token_id=generator.tokenizer.eos_token_id
             )
         
         # Process suggestions
         suggestions = []
         for output in outputs:
             # Extract only the new generated text
-            generated_text = output["generated_text"][-1]["content"]
-            # Remove any potential filler words at the start
-            generated_text = generated_text.strip()
-            suggestions.append(generated_text)
+            generated_text = output["generated_text"]
+            # Remove the input text to get only the completion
+            completion = generated_text[len(formatted_text):].strip()
+            suggestions.append(completion)
         
         generation_time = (time.time() - generation_start_time) * 1000  # Convert to milliseconds
         total_latency = (time.time() - request_start_time) * 1000  # Convert to milliseconds
@@ -124,6 +126,10 @@ async def get_completion(request: CompletionRequest):
     except Exception as e:
         logger.error(f"Error generating completion: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/latency")
+async def latency_check():
+    return {"status": "ok", "timestamp": time.time()}
 
 if __name__ == "__main__":
     import uvicorn
