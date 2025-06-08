@@ -29,7 +29,7 @@ app.add_middleware(
 )
 
 # Initialize model
-MODEL_NAME = "microsoft/phi-4"
+MODEL_NAME = "microsoft/phi-2"  # Using smaller model
 
 # Check for MPS availability
 if torch.backends.mps.is_available():
@@ -50,7 +50,8 @@ try:
         model_kwargs={
             "torch_dtype": torch.float16 if device == "cuda" else torch.float32,
             "low_cpu_mem_usage": True,
-            "device_map": device
+            "device_map": device,
+            "load_in_8bit": True if device == "cuda" else False,  # Enable 8-bit quantization for CUDA
         },
         device_map=device
     )
@@ -92,10 +93,12 @@ async def get_completion(request: CompletionRequest):
                 num_return_sequences=request.num_suggestions,
                 temperature=request.temperature,
                 do_sample=True,
-                repetition_penalty=1.2,
-                no_repeat_ngram_size=3,
-                top_k=50,
-                top_p=0.9
+                repetition_penalty=1.1,  # Reduced from 1.2
+                no_repeat_ngram_size=2,  # Reduced from 3
+                top_k=20,  # Reduced from 50
+                top_p=0.95,  # Increased from 0.9
+                early_stopping=True,  # Added early stopping
+                pad_token_id=generator.tokenizer.eos_token_id  # Added explicit padding
             )
         
         # Process suggestions
